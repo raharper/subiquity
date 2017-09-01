@@ -20,6 +20,7 @@ from functools import partial
 import logging
 import re
 
+import attr
 from urwid import (
     ACTIVATE,
     AttrWrap,
@@ -138,12 +139,12 @@ class _PopUpSelectDialog(WidgetWrap):
         self.parent = parent
         group = []
         for i, option in enumerate(self.parent._options):
-            if option[1]:
-                btn = _PopUpButton(option[0], state=i==cur_index)
+            if option.enabled:
+                btn = _PopUpButton(option.label, state=i==cur_index)
                 connect_signal(btn, 'click', self.click, i)
                 group.append(AttrWrap(btn, 'menu_button', 'menu_button focus'))
             else:
-                btn = Text("    " + option[0])
+                btn = Text("    " + option.label)
                 group.append(AttrWrap(btn, 'info_minor'))
         pile = Pile(group)
         pile.set_focus(group[cur_index])
@@ -163,6 +164,12 @@ class _PopUpSelectDialog(WidgetWrap):
 class SelectorError(Exception):
     pass
 
+@attr.s
+class _Selection:
+    label = attr.ib()
+    enabled = attr.ib()
+    value = attr.ib()
+
 class Selector(PopUpLauncher):
     """A widget that allows the user to chose between options by popping up this list of options.
 
@@ -179,12 +186,14 @@ class Selector(PopUpLauncher):
             if not isinstance(opt, tuple):
                 if not isinstance(opt, str):
                     raise SelectorError("invalid option %r", opt)
-                opt = (opt, True, opt)
+                opt = _Selection(opt, True, opt)
             elif len(opt) == 1:
-                opt = (opt[0], True, opt[0])
+                opt = _Selection(opt[0], True, opt[0])
             elif len(opt) == 2:
-                opt = (opt[0], opt[1], opt[0])
-            elif len(opt) != 3:
+                opt = _Selection(opt[0], opt[1], opt[0])
+            elif len(opt) == 3:
+                opt = _Selection(opt[0], opt[1], opt[2])
+            else:
                 raise SelectorError("invalid option %r", opt)
             self._options.append(opt)
         self._button = SelectableIcon(self._prefix, len(self._prefix))
@@ -197,7 +206,7 @@ class Selector(PopUpLauncher):
         self.open_pop_up()
 
     def _set_index(self, val):
-        self._button.set_text(self._prefix + self._options[val][0])
+        self._button.set_text(self._prefix + self._options[val].label)
         self._index = val
 
     @property
@@ -206,17 +215,27 @@ class Selector(PopUpLauncher):
 
     @index.setter
     def index(self, val):
-        self._emit('select', self._options[val][2])
+        self._emit('select', self._options[val].value)
         self._set_index(val)
+
+    def selection_by_label(self, label):
+        for opt in self._options:
+            if opt.label == label:
+                return opt
+
+    def selection_by_value(self, value):
+        for opt in self._options:
+            if opt.value == value:
+                return opt
 
     @property
     def value(self):
-        return self._options[self._index][2]
+        return self._options[self._index].value
 
     @value.setter
     def value(self, val):
-        for i, (label, enabled, value) in enumerate(self._options):
-            if value == val:
+        for i, opt in enumerate(self._options):
+            if opt.value == val:
                 self.index = i
                 return
         raise AttributeError("cannot set value to %r", val)
@@ -225,7 +244,7 @@ class Selector(PopUpLauncher):
         return _PopUpSelectDialog(self, self.index)
 
     def get_pop_up_parameters(self):
-        width = max([len(o[0]) for o in self._options]) \
+        width = max([len(o.label) for o in self._options]) \
           + len(self._prefix) +  3 # line on left, space, line on right
         return {'left':-1, 'top':-self.index-1, 'overlay_width':width, 'overlay_height':len(self._options) + 2}
 

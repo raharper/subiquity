@@ -30,7 +30,7 @@ from subiquity.ui.views import (DiskPartitionView, AddPartitionView,
                                 AddFormatView, FilesystemView,
                                 DiskInfoView, RaidView, BcacheView,
                                 LVMVolumeGroupView)
-
+from subiquity.ui.views.filesystem import EditPartitionView, FormatEntireView
 
 log = logging.getLogger("subiquitycore.controller.filesystem")
 
@@ -133,12 +133,12 @@ class FilesystemController(BaseController):
         log.debug("Adding partition to {}".format(disk))
         footer = ("Select whole disk, or partition, to format and mount.")
         self.ui.set_footer(footer)
-        adp_view = AddPartitionView(self.model, self, disk, part)
+        adp_view = EditPartitionView(self.model, self, part)
         self.ui.set_body(adp_view)
 
     def update_partition(self, part, spec):
         part.number = spec['partnum']
-        part.size = spec['bytes']
+        part.size = spec['size']
         old_fs = part.fs()
         if old_fs is not None:
             self.model._filesystems.remove(old_fs)
@@ -187,12 +187,12 @@ class FilesystemController(BaseController):
             # the offset and bios/grub partition
             # XXX should probably only do this if the partition is now too big to fit on the disk?
             log.debug("Adjusting request down:" +
-                      "{} - {} = {}".format(spec['bytes'], part.size,
-                                            spec['bytes'] - part.size))
-            spec['bytes'] -= part.size
+                      "{} - {} = {}".format(spec['size'], part.size,
+                                            spec['size'] - part.size))
+            spec['size'] -= part.size
             spec['partnum'] = 2
 
-        part = self.model.add_partition(disk=disk, partnum=spec["partnum"], size=spec["bytes"])
+        part = self.model.add_partition(disk=disk, partnum=spec["partnum"], size=spec["size"])
         if spec['fstype'] is not None:
             fs = self.model.add_filesystem(part, spec['fstype'])
             if spec['mountpoint']:
@@ -203,14 +203,18 @@ class FilesystemController(BaseController):
 
     def add_format_handler(self, volume, spec, back):
         log.debug('add_format_handler')
+        old_fs = volume.fs()
+        if old_fs is not None:
+            self.model._filesystems.remove(old_fs)
+            volume._fs = None
+            mount = old_fs.mount()
+            if mount is not None:
+                old_fs._mount = None
+                self.model._mounts.remove(mount)
         if spec['fstype'] is not None:
             fs = self.model.add_filesystem(volume, spec['fstype'])
-        else:
-            fs = volume.fs()
-        if spec['mountpoint']:
-            if fs is None:
-                raise Exception("{} is not formatted".format(volume.path))
-            self.model.add_mount(fs, spec['mountpoint'])
+            if spec['mountpoint']:
+                self.model.add_mount(fs, spec['mountpoint'])
         back()
 
     def connect_iscsi_disk(self, *args, **kwargs):
@@ -278,7 +282,7 @@ class FilesystemController(BaseController):
         footer = ("Format or mount whole disk.")
         self.ui.set_header(header)
         self.ui.set_footer(footer)
-        afv_view = AddFormatView(self.model, self, disk, lambda : self.partition_disk(disk))
+        afv_view = FormatEntireView(self.model, self, disk, lambda : self.partition_disk(disk))
         self.ui.set_body(afv_view)
 
     def format_mount_partition(self, partition):

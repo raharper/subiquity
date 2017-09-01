@@ -278,6 +278,7 @@ class Form(object, metaclass=MetaForm):
             if bf.field.name != field_name:
                 new_fields.append(bf)
         self._fields[:] = new_fields
+        delattr(self, field_name)
 
     @property
     def longest_caption(self):

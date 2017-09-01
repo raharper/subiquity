@@ -32,6 +32,7 @@ class AddFormatForm(Form):
 
     def __init__(self, model):
         self.model = model
+        self.mountpoint_to_devpath_mapping = self.model.get_mountpoint_to_devpath_mapping()
         super().__init__()
         connect_signal(self.fstype.widget, 'select', self.select_fstype)
 
@@ -42,7 +43,14 @@ class AddFormatForm(Form):
         self.mount.enabled = fs.is_mounted
 
     def validate_mount(self):
-        return self.model.validate_mount(self.mount.value)
+        mountpoint = self.mount.value
+        v = self.model.validate_mount(self.mount.value)
+        if v:
+            return v
+        mnts = self.mountpoint_to_devpath_mapping
+        dev = mnts.get(mountpoint)
+        if dev is not None:
+            return "%s is already mounted at %s"%(dev, mountpoint)
 
 
 class AddFormatView(BaseView):
@@ -54,12 +62,7 @@ class AddFormatView(BaseView):
 
         self.form = AddFormatForm(model)
         if self.volume.fs() is not None:
-            for i, fs_spec in enumerate(self.model.supported_filesystems):
-                if len(fs_spec) == 3:
-                    fs = fs_spec[2]
-                    if fs.label == self.volume.fs().fstype:
-                        self.form.fstype.widget.index = i
-            self.form.fstype.enabled = False
+            self.form.fstype.set_by_fstype(self.volume.fs().fstype)
         connect_signal(self.form, 'submit', self.done)
         connect_signal(self.form, 'cancel', self.cancel)
 

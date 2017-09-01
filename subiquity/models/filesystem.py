@@ -244,6 +244,7 @@ class FilesystemModel(object):
         ('ext4', True, FS('ext4', True)),
         ('xfs', True, FS('xfs', True)),
         ('btrfs', True, FS('btrfs', True)),
+        ('fat32', True, FS('fat32', True)),
         ('---', False),
         ('swap', True, FS('swap', False)),
         #('bcache cache', True, FS('bcache cache', False)),
@@ -362,9 +363,11 @@ class FilesystemModel(object):
         self._mounts.append(m)
         return m
 
-    def get_mountpoint_to_devpath_mapping(self):
+    def get_mountpoint_to_devpath_mapping(self, exclude_device=None):
         r = {}
         for m in self._mounts:
+            if m.device.volume == exclude_device:
+                continue
             r[m.path] = m.device.volume.path
         return r
 

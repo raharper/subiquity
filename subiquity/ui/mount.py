@@ -1,4 +1,5 @@
 
+import logging
 import os
 import re
 
@@ -17,7 +18,8 @@ common_mountpoints = [
     '/var/lib',
     ]
 
-
+log = logging.getLogger("subiquity.ui.mount")
+    
 class _MountEditor(StringEditor):
     """ Mountpoint input prompt with input rules
     """
@@ -50,6 +52,7 @@ class MountSelector(WidgetWrap):
                 opts.append(("%-*s (%s)"%(max_len, mnt, devpath), False))
         if first_opt is None:
             first_opt = len(opts)
+        log.debug("%r", opts)
         opts.append(('other', True, OTHER))
         opts.append(('---', False)),
         opts.append(('leave unmounted', True, LEAVE_UNMOUNTED))
@@ -71,8 +74,7 @@ class MountSelector(WidgetWrap):
             self._other_showing = False
 
     def _select_mount(self, sender, value):
-        if (self._selector.value == OTHER) != (value == OTHER):
-            self._showhide_other(value==OTHER)
+        self._showhide_other(value==OTHER)
         if value == OTHER:
             self._w.focus_position = 1
 

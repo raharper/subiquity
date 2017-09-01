@@ -68,7 +68,10 @@ class DiskPartitionView(BaseView):
                 fstype = part.fs().fstype
                 mountpoint = part.fs().mount().path
             part_btn = menu_btn(label)
-            connect_signal(part_btn, 'click', self._click_part, part)
+            if part.type == 'disk':
+                connect_signal(part_btn, 'click', self._click_disk)
+            else:
+                connect_signal(part_btn, 'click', self._click_part, part)
             return Columns([
                 (25, Color.menu_button(part_btn)),
                 (9, Text(size, align="right")),
@@ -106,6 +109,9 @@ class DiskPartitionView(BaseView):
 
     def _click_part(self, sender, part):
         self.controller.edit_disk_partition(self.disk, part)
+
+    def _click_disk(self, sender):
+        self.controller.format_entire(self.disk)
 
     def show_disk_info_w(self):
         """ Runs hdparm against device and displays its output

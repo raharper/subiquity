@@ -47,21 +47,59 @@ log = logging.getLogger('subiquity.ui.filesystem.add_partition')
 
 class FSTypeField(FormField):
     def _make_widget(self, form):
-        return Selector(opts=form.model.supported_filesystems)
+        return Selector(opts=form.supported_filesystems)
 
 
-class AddPartitionForm(Form):
+class PartitionFormatForm(Form):
 
-    def __init__(self, model, disk, size_limit, mountpoint_to_devpath_mapping):
-        self.model = model
+    def __init__(self, supported_filesystems, size_limit, mountpoint_to_devpath_mapping):
+        self.supported_filesystems = supported_filesystems
         self.mountpoint_to_devpath_mapping = mountpoint_to_devpath_mapping
-        self.disk = disk
-        self.size_limit = size_limit
-        self.size_str = humanize_size(size_limit)
         super().__init__()
-        self.size.caption = "Size (max {})".format(self.size_str)
-        self.partnum.value = self.disk.next_partnum
+        self.size_limit = size_limit
+        if size_limit is not None:
+            self.size_str = humanize_size(size_limit)
+            self.size.caption = "Size (max {})".format(self.size_str)
+        else:
+            self.remove_field('partnum')
+            self.remove_field('size')
         connect_signal(self.fstype.widget, 'select', self.select_fstype)
+
+    def initialize_from_object(self, volume):
+        mount = None
+        fs = volume.fs()
+        if fs is not None:
+            mount = fs.mount()
+        if volume.type == 'partition':
+            self.partnum.value = volume.number
+            self.size.value = humanize_size(volume.size)
+        if fs is not None:
+            sel = self.fstype.widget.selection_by_label(fs.fstype)
+            self.fstype.value = sel.value
+            if sel.value.is_mounted and mount is not None:
+                self.mount.value = mount.path
+
+    def result(self):
+
+        fstype = self.fstype.value
+
+        if fstype.is_mounted:
+            mount = self.mount.value
+        else:
+            mount = None
+
+        result = {
+            "fstype": fstype.label,
+            "mountpoint": mount,
+        }
+
+        if self.size_limit:
+            size = dehumanize_size(self.size.value)
+            if size > self.size_limit:
+                size = self.size_limit
+            result["size"] = size
+            result["partnum"] = self.partnum.value
+        return result
 
     def select_fstype(self, sender, fs):
         self.mount.enabled = fs.is_mounted
@@ -74,6 +112,7 @@ class AddPartitionForm(Form):
     def validate_size(self):
         v = self.size.value
         if not v:
+            self.size.value = self.size_str
             return
         suffixes = ''.join(HUMAN_UNITS) + ''.join(HUMAN_UNITS).lower()
         if v[-1] not in suffixes:
@@ -90,63 +129,40 @@ class AddPartitionForm(Form):
 
     def validate_mount(self):
         mountpoint = self.mount.value
-        v = self.model.validate_mount(self.mount.value)
-        if v:
-            return v
-        mnts = self.mountpoint_to_devpath_mapping
-        dev = mnts.get(mountpoint)
+        if mountpoint is None:
+            return
+        # /usr/include/linux/limits.h:PATH_MAX
+        if len(mountpoint) > 4095:
+            return 'Path exceeds PATH_MAX'
+        dev = self.mountpoint_to_devpath_mapping.get(mountpoint)
         if dev is not None:
             return "%s is already mounted at %s"%(dev, mountpoint)
 
 
-class AddPartitionView(BaseView):
-
-    def __init__(self, model, controller, disk, part=None):
-        log.debug('AddPartitionView: selected_disk=[{}]'.format(disk.path))
+class _PartitionFormatView(BaseView):
+    def __init__(self, model, controller, size_limit, edit_obj=None, include_delete=False):
         self.model = model
         self.controller = controller
-        self.disk = disk
-        self.part = part
 
-        mountpoint_to_devpath_mapping = model.get_mountpoint_to_devpath_mapping()
+        self.form = PartitionFormatForm(
+            model.supported_filesystems,
+            size_limit,
+            model.get_mountpoint_to_devpath_mapping(edit_obj))
 
-        self.size_limit = self.disk.free
-        if part is not None:
-            self.size_limit += part.size
-            fs = part.fs()
-            if fs is not None:
-                mount = fs.mount()
-                if mount is not None:
-                    del mountpoint_to_devpath_mapping[mount.path]
-
-        self.form = AddPartitionForm(model, self.disk, self.size_limit, mountpoint_to_devpath_mapping)
-        if part is not None:
-            self.form.partnum.value = part.number
-            self.form.size.value = humanize_size(part.size)
-            fs = part.fs()
-            mount = None
-            if fs is not None:
-                label = fs.fstype
-                mount = fs.mount()
-            else:
-                label = 'leave unformatted'
-            for x in self.model.supported_filesystems:
-                log.debug("%s %s", x, label)
-                if x[0] == label:
-                    self.form.fstype.value = x[2]
-                    if x[2].is_mounted and mount is not None:
-                        self.form.mount.value = mount.path
+        if edit_obj is not None:
+            self.form.initialize_from_object(edit_obj)
 
         connect_signal(self.form, 'submit', self.done)
         connect_signal(self.form, 'cancel', self.cancel)
 
         body = [
             self.form.as_rows(self),
-            Padding.line_break("")]
+            Padding.line_break(""),
+            ]
 
-        if part is not None:
+        if include_delete:
             delete_btn = PlainButton("Delete")
-            connect_signal(delete_btn, 'click', self.delete_partition)
+            connect_signal(delete_btn, 'click', self.delete)
             body.extend([
                 Padding.fixed_10(Color.info_error(delete_btn)),
                 Text(""),
@@ -157,38 +173,66 @@ class AddPartitionView(BaseView):
         partition_box = Padding.center_50(ListBox(body))
         super().__init__(partition_box)
 
-    def delete_partition(self, sender):
-        self.controller.delete_partition(self.part)
+
+class AddPartitionView(_PartitionFormatView):
+
+    def __init__(self, model, controller, disk):
+        log.debug('AddPartitionView: selected_disk=[{}]'.format(disk.path))
+        self.disk = disk
+
+        super().__init__(
+            model,
+            controller,
+            disk.free)
+
+        self.form.partnum.value = disk.next_partnum
 
     def cancel(self, button=None):
         self.controller.partition_disk(self.disk)
 
     def done(self, result):
+        self.controller.add_disk_partition_handler(self.disk, self.form.result())
 
-        fstype = self.form.fstype.value
 
-        if fstype.is_mounted:
-            mount = self.form.mount.value
-        else:
-            mount = None
+class EditPartitionView(_PartitionFormatView):
 
-        if self.form.size.value:
-            size = dehumanize_size(self.form.size.value)
-            if size > self.size_limit:
-                size = self.size_limit
-        else:
-            size = self.size_limit
+    def __init__(self, model, controller, partition):
+        log.debug('EditPartitionView: selected_disk=[{}]'.format(partition.path))
+        self.partition = partition
 
-        result = {
-            "partnum": self.form.partnum.value,
-            "raw_size": self.form.size.value,
-            "bytes": size,
-            "fstype": fstype.label,
-            "mountpoint": mount,
-        }
+        super().__init__(
+            model,
+            controller,
+            partition.device.free + partition.size,
+            partition,
+            include_delete=True)
 
-        log.debug("Add Partition Result: {}".format(result))
-        if self.part is None:
-            self.controller.add_disk_partition_handler(self.disk, result)
-        else:
-            self.controller.update_partition(self.part, result)
+    def cancel(self, button=None):
+        self.controller.partition_disk(self.disk)
+
+    def done(self, result):
+        self.controller.update_partition(self.partition, self.form.result())
+
+    def delete(self, sender):
+        self.controller.delete_partition(self.partition)
+
+
+class FormatEntireView(_PartitionFormatView):
+
+    def __init__(self, model, controller, disk, back):
+        log.debug('FormatEntireView: selected_disk=[{}]'.format(disk.path))
+        self.disk = disk
+        self.back = back
+
+        super().__init__(
+            model,
+            controller,
+            None,
+            disk,
+            include_delete=False)
+
+    def cancel(self, button=None):
+        self.back()
+
+    def done(self, result):
+        self.controller.add_format_handler(self.disk, self.form.result(), self.back)
