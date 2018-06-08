@@ -24,6 +24,9 @@ from socket import AF_INET, AF_INET6
 import yaml
 from yaml.reader import ReaderError
 
+from subiquitycore.models.network_devices import (
+    Bond, Bridge, Ethernet, Vlan, Wifi)
+
 
 NETDEV_IGNORED_IFACE_NAMES = ['lo']
 NETDEV_IGNORED_IFACE_TYPES = ['bridge', 'tun', 'tap', 'dummy', 'sit']
@@ -392,6 +395,9 @@ class NetworkModel(object):
         self.v6_gateway_dev = None
         self.network_routes = {}
 
+        # hold the configuration objects by interface
+        self.network_interfaces = {}
+
     def parse_netplan_configs(self, netplan_root):
         self.config = NetplanConfig()
         configs_by_basename = {}
@@ -426,6 +432,7 @@ class NetworkModel(object):
                   ifindex, link.name, sanitize_interface_config(config))
         self.devices[ifindex] = Networkdev(link, config)
         self.devices_by_name[link.name] = Networkdev(link, config)
+        self.add_ethernet(link.name, link.hwaddr)
 
     def update_link(self, ifindex):
         # This is pretty edge-casey as the fact that we wait for the
@@ -456,58 +463,119 @@ class NetworkModel(object):
     def get_netdev_by_name(self, name):
         return self.devices_by_name[name]
 
-    def add_bond(self, ifname, interfaces, params=[], subnets=[]):
-        # This needs rewriting!
-        ''' create a bond action and info dict from parameters '''
-        for iface in interfaces:
-            self.devices[iface].remove_networks()
-            self.devices[iface].dhcp4 = False
-            self.devices[iface].dhcp6 = False
-            self.devices[iface].switchport = True
-
-        info = {
-            "bond": {
-                "is_master": True,
-                "is_slave": False,
-                "mode": params['bond-mode'],
-                "slaves": interfaces,
-            },
-            "bridge": {
-                "interfaces": [],
-                "is_bridge": False,
-                "is_port": False,
-                "options": {}
-            },
-            "hardware": {
-                "INTERFACE": ifname,
-                'ID_MODEL_FROM_DATABASE': " + ".join(interfaces),
-                'attrs': {
-                    'address': "00:00:00:00:00:00",
-                    'speed': None,
-                },
-            },
-            "ip": {
-                "addr": "0.0.0.0",
-                "netmask": "0.0.0.0",
-                "source": None
-            },
-            "type": "bond"
+    def add_network_device(self, ifname, iftype, config):
+        type_to_class = {
+            'bonds': Bond,
+            'bridges': Bridge,
+            'ethernets': Ethernet,
+            'vlans': Vlan,
+            'wifis': Wifi,
         }
-        bondinfo = info
-        bonddev = Networkdev(ifname, 'bond')
-        bonddev.configure(probe_info=bondinfo)
+        if ifname in self.network_interfaces:
+            raise ValueError("Interface %s already exists", ifname)
+        if iftype not in type_to_class:
+            raise ValueError("Cannot create interface for type: %s", iftype)
 
-        # update slave interface info
-        for bondifname in interfaces:
-            bondif = self.get_interface(bondifname)
-            bondif.info.bond['is_slave'] = True
-            log.debug('Marking {} as bond slave'.format(bondifname))
+        log.debug('Adding %s interface: %s config:%s', iftype, ifname, config)
+        iface = type_to_class.get(iftype).from_config(config=config)
+        self.network_interfaces[iface.name] = iface
+        return iface
 
-        log.debug("add_bond: {} as netdev({})".format(
-                  ifname, bonddev))
+    def configure_interface(self, ifname, config):
+        """
+        config = {
+            'name': 'eno3',
+            'macaddress': 'aa:bb:cc:dd:ee:ff',
+            'mtu': 1500,
+            'addresses': ['192.168.23.2/24']
+            'dhcp4': False,
+            'dhcp6': True,
+            'nameservers':
+        }
+        """
+        if ifname not in self.network_interfaces:
+            raise ValueError('Cannot configure unknown interface: %s' % ifname)
+        if not config:
+            raise ValueError('Missing interface config parameter: "%s"' %
+                             config)
 
-        self.devices[ifname] = bonddev
-        self.info[ifname] = bondinfo
+        iface = self.network_interfaces.get(ifname)
+        log.debug('Updating interface %s with config %s', ifname, config)
+        iface.update_config(config)
+
+    def add_bond(self, ifname, interfaces=None, params=None, config=None):
+        if not interfaces:
+            interfaces = []
+        if not params:
+            params = {}
+        if not config:
+            config = {
+                'name': ifname,
+                'interfaces': interfaces,
+                'parameters': params,
+            }
+        return self.add_network_device(ifname, 'bonds', config)
+
+    def add_bridge(self, ifname, interfaces=None, params=None, config=None):
+        if not interfaces:
+            interfaces = []
+        if not params:
+            params = {}
+        if not config:
+            config = {
+                'name': ifname,
+                'interfaces': interfaces,
+                'parameters': params,
+            }
+        return self.add_network_device(ifname, 'bridges', config)
+
+    def add_ethernet(self, ifname, macaddress, config=None):
+        if not macaddress:
+            raise ValueError('Missing ethernet parameter: macaddress')
+        if not config:
+            config = {
+                'name': ifname,
+                'macaddress': macaddress,
+            }
+        return self.add_network_device(ifname, 'ethernets', config)
+
+    def add_vlan(self, ifname, vlan_id, vlan_link, config=None):
+        if not vlan_id:
+            raise ValueError('Missing parameter vlan_id: "%s"' % vlan_id)
+        if not vlan_link:
+            raise ValueError('Missing parameter vlan_link: "%s"' % vlan_link)
+
+        vlan_name = "%s.%s" % (vlan_link, vlan_id)
+        iface = self.network_interfaces.get(vlan_name)
+        if iface:
+            raise RuntimeError('Cannot add duplicate vlan: %s' % iface.name)
+
+        link_iface = self.network_interfaces.get(vlan_link)
+        if not link_iface:
+            raise RuntimeError('Specified vlan link "%s" does not exist' %
+                               vlan_link)
+        if not config:
+            config = {
+                'name': vlan_name,
+                'id': vlan_id,
+                'link': vlan_link,
+            }
+        return self.add_network_device(vlan_name, 'vlans', config)
+
+    def add_wifi(self, ifname, ssid, password=None, mode=None, config=None):
+        if not ssid:
+            raise ValueError('Wifi interfaces require an ssid parameter')
+        if not config:
+            apcfg = {}
+            if password:
+                apcfg['password'] = password
+            if mode:
+                apcfg['mode'] = mode
+            config = {
+                'name': ifname,
+                'access_points': apcfg
+            }
+        return self.add_network_device(ifname, 'wifis', config)
 
     def clear_gateways(self):
         log.debug("clearing default gateway")

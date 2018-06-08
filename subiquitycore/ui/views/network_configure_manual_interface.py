@@ -55,6 +55,15 @@ class IPField(FormField):
             return RestrictedEditor(allowed)
 
 
+class VlanField(FormField):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+
+    def _make_widget(self, form):
+        allowed = '[0-9]'
+        return RestrictedEditor(allowed)
+
+
 class NetworkConfigForm(Form):
 
     def __init__(self, ip_version):
@@ -73,6 +82,7 @@ class NetworkConfigForm(Form):
                               help=_("IP addresses, comma separated"))
     searchdomains = StringField(_("Search domains:"),
                                 help=_("Domains, comma separated"))
+    vlan = VlanField(_("VlanID:"))
 
     def clean_subnet(self, subnet):
         log.debug("clean_subnet %r", subnet)
@@ -111,6 +121,17 @@ class NetworkConfigForm(Form):
             if domain:
                 domains.append(domain)
         return domains
+
+    def clean_vlan(self, value):
+        try:
+            vlanid = int(value)
+        except ValueError:
+            vlanid = None
+        if vlanid is not None:
+            if vlanid < 1 or vlanid > 4095:
+                raise ValueError(
+                    _("VLAN id must be between 1 and 4095"))
+        return vlanid
 
 
 class BaseNetworkConfigureManualView(BaseView):
@@ -195,6 +216,10 @@ class BaseNetworkConfigureManualView(BaseView):
         self.dev.remove_ip_networks_for_version(self.ip_version)
         self.dev.remove_nameservers()
         self.dev.add_network(self.ip_version, result)
+        vlan_id = self.form.vlan.value
+        if vlan_id:
+            vlan_name = "%s.%s" % (self.dev.name, vlan_id)
+            self.model.add_vlan(vlan_name, int(vlan_id), self.dev.name)
 
         # return
         self.controller.network_configure_interface(self.dev.name)
